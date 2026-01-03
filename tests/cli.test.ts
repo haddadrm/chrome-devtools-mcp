@@ -17,6 +17,8 @@ describe('cli args parsing', () => {
     categoryPerformance: true,
     'category-network': true,
     categoryNetwork: true,
+    'category-inspection': true,
+    categoryInspection: true,
     'auto-connect': undefined,
     autoConnect: undefined,
   };

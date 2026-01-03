@@ -121,6 +121,12 @@ function registerTool(tool: ToolDefinition): void {
   ) {
     return;
   }
+  if (
+    tool.annotations.category === ToolCategory.INSPECTION &&
+    args.categoryInspection === false
+  ) {
+    return;
+  }
   server.registerTool(
     tool.name,
     {
