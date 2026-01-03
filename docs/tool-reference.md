@@ -392,12 +392,12 @@ Useful for debugging inconsistent styling or understanding variations.
 ### `force_element_state`
 
 **Description:** Force an element into specific CSS pseudo-states for inspection.
-Use this to inspect :[`hover`](#hover), :active, :focus styles without actually interacting with the element.
+Use this to inspect :hover, :active, :focus styles without actually interacting with the element.
 Multiple states can be forced simultaneously.
 
 **Parameters:**
 
-- **states** (array) **(required)**: Pseudo-states to force (e.g., ["[`hover`](#hover)", "focus"])
+- **states** (array) **(required)**: Pseudo-states to force (e.g., ["hover", "focus"])
 - **uid** (string) **(required)**: Element UID from snapshot (e.g., "42_5")
 
 ---

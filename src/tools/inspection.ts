@@ -5,6 +5,7 @@
  */
 
 import {zod} from '../third_party/index.js';
+import type {Protocol} from '../third_party/index.js';
 import {
   getCdpSession,
   resolveToNodeId,
@@ -457,9 +458,12 @@ Use this to find elements by class, id, tag, or complex CSS selectors.`,
           attrMap[attributes[i]] = attributes[i + 1];
         }
 
+        // Try to resolve uid if a snapshot exists
+        const uid = context.resolveCdpElementId(node.backendNodeId);
         elements.push({
           nodeId,
           backendNodeId: node.backendNodeId,
+          uid: uid || null,
           tagName: node.nodeName.toLowerCase(),
           id: attrMap['id'] || null,
           className: attrMap['class'] || null,
@@ -495,7 +499,7 @@ The highlight shows content (blue), padding (green), border (yellow), and margin
   annotations: {
     title: 'Highlight Element',
     category: ToolCategory.INSPECTION,
-    readOnlyHint: true,
+    readOnlyHint: false,
   },
   schema: {
     uid: zod.string().describe('Element UID from snapshot (e.g., "42_5")'),
@@ -548,9 +552,15 @@ The highlight shows content (blue), padding (green), border (yellow), and margin
       }, request.params.duration);
     }
 
-    response.appendResponseLine(
-      `Element highlighted for ${request.params.duration}ms. Use hide_highlight to remove early.`,
-    );
+    if (request.params.duration > 0) {
+      response.appendResponseLine(
+        `Element highlighted for ${request.params.duration}ms. Use hide_highlight to remove early.`,
+      );
+    } else {
+      response.appendResponseLine(
+        'Element highlighted until hide_highlight is called.',
+      );
+    }
   },
 });
 
@@ -564,7 +574,7 @@ export const hideHighlight = defineTool({
   annotations: {
     title: 'Hide Highlight',
     category: ToolCategory.INSPECTION,
-    readOnlyHint: true,
+    readOnlyHint: false,
   },
   schema: {},
   handler: async (_request, response, context) => {
@@ -572,8 +582,17 @@ export const hideHighlight = defineTool({
     const client = await getCdpSession(page);
 
     try {
+      // Hide regular element highlights
       await client.send('Overlay.hideHighlight');
-      response.appendResponseLine('Highlight hidden.');
+      // Clear grid overlays
+      await client.send('Overlay.setShowGridOverlays', {
+        gridNodeHighlightConfigs: [],
+      });
+      // Clear flex overlays
+      await client.send('Overlay.setShowFlexOverlays', {
+        flexNodeHighlightConfigs: [],
+      });
+      response.appendResponseLine('All highlights and layout overlays hidden.');
     } catch {
       response.appendResponseLine('No highlight was active.');
     }
@@ -641,15 +660,51 @@ Useful for understanding the structure of a component or page section.`,
       pierce: true,
     });
 
-    // Give a moment for nodes to be pushed
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Wait until children are available or timeout (instead of fixed 100ms delay)
+    const waitForNodeWithChildren = async (
+      timeoutMs = 2000,
+      pollIntervalMs = 50,
+    ): Promise<Protocol.DOM.Node> => {
+      const start = Date.now();
+      let lastNode: Protocol.DOM.Node | null = null;
 
-    // Get the node with children
-    const {node} = await client.send('DOM.describeNode', {
-      nodeId: rootNodeId,
-      depth: request.params.depth,
-      pierce: true,
-    });
+      while (true) {
+        const {node: currentNode} = await client.send('DOM.describeNode', {
+          nodeId: rootNodeId,
+          depth: request.params.depth,
+          pierce: true,
+        });
+
+        lastNode = currentNode;
+
+        // Return immediately if:
+        // 1. We have children populated, OR
+        // 2. This is a leaf node (childNodeCount === 0), OR
+        // 3. children array is defined (even if empty - means it's been loaded)
+        if (currentNode) {
+          const hasChildren =
+            Array.isArray(currentNode.children) &&
+            currentNode.children.length > 0;
+          const isLeafNode = currentNode.childNodeCount === 0;
+          const childrenLoaded = Array.isArray(currentNode.children);
+
+          if (hasChildren || isLeafNode || childrenLoaded) {
+            return currentNode;
+          }
+        }
+
+        // Check timeout
+        if (Date.now() - start >= timeoutMs) {
+          // Return whatever we have (may have no children)
+          return lastNode!;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      }
+    };
+
+    // Get the node with children (or best effort within timeout)
+    const node = await waitForNodeWithChildren();
 
     // Format tree recursively
     interface TreeNode {
@@ -659,7 +714,10 @@ Useful for understanding the structure of a component or page section.`,
       children?: TreeNode[];
     }
 
-    function formatNode(n: typeof node, currentDepth: number): TreeNode | null {
+    function formatNode(
+      n: Protocol.DOM.Node,
+      currentDepth: number,
+    ): TreeNode | null {
       if (!n || currentDepth > request.params.depth) return null;
 
       // Skip text nodes and comments for cleaner output
@@ -680,7 +738,9 @@ Useful for understanding the structure of a component or page section.`,
 
       if (n.children && currentDepth < request.params.depth) {
         const children = n.children
-          .map(child => formatNode(child, currentDepth + 1))
+          .map((child: Protocol.DOM.Node) =>
+            formatNode(child, currentDepth + 1),
+          )
           .filter((c): c is TreeNode => c !== null);
 
         if (children.length > 0) {
@@ -775,11 +835,23 @@ Useful for analyzing entire page layouts or large sections.`,
 
       const nodeNames = doc.nodes?.nodeName;
       const nodeAttrs = doc.nodes?.attributes;
-      const bounds = doc.layout?.bounds || [];
+      const layoutBounds = doc.layout?.bounds || [];
+      const layoutNodeIndex = doc.layout?.nodeIndex || [];
+
+      // Build a map from node index to layout index for proper bounds lookup
+      // layout.nodeIndex maps layout index -> node index
+      // We need to reverse this to get node index -> layout index
+      const nodeToLayoutIndex = new Map<number, number>();
+      for (let layoutIdx = 0; layoutIdx < layoutNodeIndex.length; layoutIdx++) {
+        nodeToLayoutIndex.set(layoutNodeIndex[layoutIdx], layoutIdx);
+      }
 
       if (!nodeNames) continue;
 
-      for (let i = 0; i < nodeNames.length && i < 100; i++) {
+      // Limit to MAX_NODES_PER_DOCUMENT for both processing and output
+      const MAX_NODES_PER_DOCUMENT = 50;
+
+      for (let i = 0; i < nodeNames.length && nodes.length < MAX_NODES_PER_DOCUMENT; i++) {
         const nameIdx = nodeNames[i];
         const name = strings[nameIdx]?.toLowerCase() || '';
 
@@ -791,12 +863,15 @@ Useful for analyzing entire page layouts or large sections.`,
         for (let j = 0; j < attrPairs.length; j += 2) {
           const keyIdx = attrPairs[j];
           const valIdx = attrPairs[j + 1];
-          if (strings[keyIdx] && strings[valIdx]) {
+          // Check for undefined/null explicitly to preserve empty string values
+          if (strings[keyIdx] !== undefined && strings[valIdx] !== undefined) {
             attrs[strings[keyIdx]] = strings[valIdx];
           }
         }
 
-        const nodeBounds = bounds[i];
+        // Look up bounds using the layout index corresponding to this node
+        const layoutIdx = nodeToLayoutIndex.get(i);
+        const nodeBounds = layoutIdx !== undefined ? layoutBounds[layoutIdx] : undefined;
         nodes.push({
           index: i,
           name,
@@ -816,7 +891,7 @@ Useful for analyzing entire page layouts or large sections.`,
         documentIndex: docIndex,
         url: strings[doc.documentURL] || '',
         nodeCount: nodeNames.length,
-        nodes: nodes.slice(0, 50), // Limit output
+        nodes,
       });
     }
 
@@ -827,7 +902,7 @@ Useful for analyzing entire page layouts or large sections.`,
           documents,
           note:
             documents[0]?.nodeCount > 50
-              ? 'Output limited to first 50 elements per document'
+              ? `Output limited to first 50 elements per document`
               : undefined,
         },
         null,
@@ -928,16 +1003,20 @@ Useful for understanding element interactivity.`,
     // Resolve node to JS object
     const {object} = await client.send('DOM.resolveNode', {nodeId});
 
-    // Get event listeners
-    const {listeners} = await client.send('DOMDebugger.getEventListeners', {
-      objectId: object.objectId!,
-      depth: 1,
-      pierce: true,
-    });
-
-    // Release the object
-    if (object.objectId) {
-      await client.send('Runtime.releaseObject', {objectId: object.objectId});
+    let listeners;
+    try {
+      // Get event listeners
+      const result = await client.send('DOMDebugger.getEventListeners', {
+        objectId: object.objectId!,
+        depth: 1,
+        pierce: true,
+      });
+      listeners = result.listeners;
+    } finally {
+      // Always release the object to prevent memory leaks
+      if (object.objectId) {
+        await client.send('Runtime.releaseObject', {objectId: object.objectId});
+      }
     }
 
     const formattedListeners = listeners.map(listener => ({
@@ -1024,6 +1103,9 @@ Useful for identifying elements at specific visual locations.`,
       attrMap[attributes[i]] = attributes[i + 1];
     }
 
+    // Try to resolve uid if a snapshot exists
+    const uid = backendNodeId ? context.resolveCdpElementId(backendNodeId) : undefined;
+
     response.appendResponseLine(
       JSON.stringify(
         {
@@ -1032,6 +1114,7 @@ Useful for identifying elements at specific visual locations.`,
           element: {
             backendNodeId,
             nodeId: resolvedNodeId,
+            uid: uid || null,
             tagName: node.nodeName.toLowerCase(),
             id: attrMap['id'] || null,
             className: attrMap['class'] || null,
@@ -1128,9 +1211,12 @@ Supports plain text search, CSS selectors, and XPath expressions.`,
           attrMap[attrs[i]] = attrs[i + 1];
         }
 
+        // Try to resolve uid if a snapshot exists
+        const uid = context.resolveCdpElementId(node.backendNodeId);
         elements.push({
           nodeId,
           backendNodeId: node.backendNodeId,
+          uid: uid || null,
           tagName: node.nodeName.toLowerCase(),
           id: attrMap['id'] || null,
           className: attrMap['class'] || null,
@@ -1235,7 +1321,7 @@ Helps understand and debug complex layouts.`,
   annotations: {
     title: 'Show Layout Overlay',
     category: ToolCategory.INSPECTION,
-    readOnlyHint: true,
+    readOnlyHint: false,
   },
   schema: {
     uid: zod.string().describe('Element UID from snapshot (e.g., "42_5")'),
@@ -1282,7 +1368,7 @@ Helps understand and debug complex layouts.`,
         ],
       });
       response.appendResponseLine(
-        'Grid overlay shown. Call hide_highlight or show_layout_overlay with empty configs to hide.',
+        'Grid overlay shown. Call hide_highlight to remove.',
       );
     } else {
       await client.send('Overlay.setShowFlexOverlays', {
