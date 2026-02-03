@@ -19,6 +19,10 @@ describe('cli args parsing', () => {
     categoryNetwork: true,
     'category-storage': true,
     categoryStorage: true,
+    'category-inspection': true,
+    categoryInspection: true,
+    'auto-connect': undefined,
+    autoConnect: undefined,
   };
 
   it('parses with default args', async () => {
@@ -208,6 +212,18 @@ describe('cli args parsing', () => {
       channel: 'stable',
       'category-emulation': false,
       categoryEmulation: false,
+    });
+  });
+  it('parses auto-connect', async () => {
+    const args = parseArguments('1.0.0', ['node', 'main.js', '--auto-connect']);
+    assert.deepStrictEqual(args, {
+      ...defaultArgs,
+      _: [],
+      headless: false,
+      $0: 'npx chrome-devtools-mcp@latest',
+      channel: 'stable',
+      'auto-connect': true,
+      autoConnect: true,
     });
   });
 });
