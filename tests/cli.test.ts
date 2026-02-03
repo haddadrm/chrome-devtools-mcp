@@ -17,6 +17,8 @@ describe('cli args parsing', () => {
     categoryPerformance: true,
     'category-network': true,
     categoryNetwork: true,
+    'category-storage': true,
+    categoryStorage: true,
   };
 
   it('parses with default args', async () => {

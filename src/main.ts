@@ -31,6 +31,7 @@ import * as performanceTools from './tools/performance.js';
 import * as screenshotTools from './tools/screenshot.js';
 import * as scriptTools from './tools/script.js';
 import * as snapshotTools from './tools/snapshot.js';
+import * as storageTools from './tools/storage.js';
 import type {ToolDefinition} from './tools/ToolDefinition.js';
 
 // If moved update release-please config
@@ -121,6 +122,12 @@ function registerTool(tool: ToolDefinition): void {
   ) {
     return;
   }
+  if (
+    tool.annotations.category === ToolCategory.STORAGE &&
+    args.categoryStorage === false
+  ) {
+    return;
+  }
   server.registerTool(
     tool.name,
     {
@@ -176,6 +183,7 @@ const tools = [
   ...Object.values(screenshotTools),
   ...Object.values(scriptTools),
   ...Object.values(snapshotTools),
+  ...Object.values(storageTools),
 ] as ToolDefinition[];
 
 tools.sort((a, b) => {

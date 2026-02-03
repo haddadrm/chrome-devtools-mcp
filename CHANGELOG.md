@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **storage:** add 9 storage & cookie management tools using the CDP Storage domain
+  - `get_cookies` - retrieve all cookies grouped by domain
+  - `get_cookies_for_domain` - filter cookies by domain with flexible matching
+  - `set_cookie` - set a cookie with full attribute support
+  - `clear_all_cookies` - clear all browser cookies (with confirmation guard)
+  - `get_storage_usage` - get storage usage and quota for an origin
+  - `clear_storage_for_origin` - clear storage data for an origin (with confirmation guard)
+  - `track_cache_storage` - enable/disable cache storage event tracking
+  - `track_indexeddb` - enable/disable IndexedDB event tracking
+  - `override_storage_quota` - override or reset storage quota for an origin
+* **cli:** add `--no-category-storage` flag to disable storage tools
+
 ## [0.10.2](https://github.com/ChromeDevTools/chrome-devtools-mcp/compare/chrome-devtools-mcp-v0.10.1...chrome-devtools-mcp-v0.10.2) (2025-11-19)
 
 
